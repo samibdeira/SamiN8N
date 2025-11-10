@@ -1,0 +1,482 @@
+{
+  "name": "Shopify AI Customer Service Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "shopify-customer-service",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-001",
+      "name": "Customer Service Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "customer-service-automation"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract customer service data from webhook\nconst items = $input.all();\nconst outputItems = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Extract customer information\n  const customerName = data.customerName || 'Customer';\n  const customerEmail = data.customerEmail || '';\n  const customerMessage = data.customerMessage || '';\n  const orderNumber = data.orderNumber || null;\n  const timestamp = data.timestamp || new Date().toISOString();\n  \n  // Store context: Beauty/Skincare store knowledge base\n  const storeContext = {\n    storeName: 'Glow Beauty',\n    storeType: 'Beauty and Skincare E-commerce',\n    returnPolicy: 'We accept returns within 30 days for unopened products. Opened skincare products cannot be returned due to health and safety regulations.',\n    shippingInfo: 'Free shipping on orders over $50. Standard shipping takes 3-5 business days. Express shipping available for $15.',\n    productCategories: ['Serums', 'Moisturizers', 'Cleansers', 'Masks', 'Sunscreen', 'Anti-aging', 'Acne treatment'],\n    support: 'For urgent matters, contact support@glowbeauty.com or call 1-800-GLOW-NOW'\n  };\n  \n  // Create structured output\n  outputItems.push({\n    json: {\n      customerName: customerName,\n      customerEmail: customerEmail,\n      customerMessage: customerMessage,\n      orderNumber: orderNumber,\n      timestamp: timestamp,\n      storeContext: storeContext,\n      processedAt: new Date().toISOString()\n    }\n  });\n}\n\nreturn outputItems;"
+      },
+      "id": "code-process-data-001",
+      "name": "Process Customer Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "=You are a helpful customer service AI assistant for {{ $json.storeContext.storeName }}, a {{ $json.storeContext.storeType }}.\n\nYour role:\n- Answer customer questions professionally and warmly\n- Provide accurate information about our policies and products\n- Be concise but thorough\n- If you're very confident in your answer, include a confidence score of 0.9 or higher\n- If the question is complex or you're uncertain, use a confidence score of 0.7 or lower\n\nStore Information:\n- Return Policy: {{ $json.storeContext.returnPolicy }}\n- Shipping: {{ $json.storeContext.shippingInfo }}\n- Product Categories: {{ $json.storeContext.productCategories.join(', ') }}\n- Support Contact: {{ $json.storeContext.support }}\n\nIMPORTANT: End your response with a confidence score on a new line like this:\nConfidence: 0.85\n\nUse this scale:\n- 0.9-1.0: Very confident, straightforward policy question\n- 0.7-0.89: Moderately confident, general product question\n- 0.5-0.69: Less confident, specific product details needed\n- Below 0.5: Unsure, needs human review"
+            },
+            {
+              "role": "user",
+              "content": "=Customer: {{ $json.customerName }}\nEmail: {{ $json.customerEmail }}\n{{ $json.orderNumber ? 'Order #: ' + $json.orderNumber : '' }}\n\nQuestion: {{ $json.customerMessage }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        },
+        "simplifyOutput": true
+      },
+      "id": "openai-response-001",
+      "name": "OpenAI Customer Service",
+      "type": "n8n-nodes-langchain.openai",
+      "typeVersion": 1.5,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "{{ OPENAI_CREDENTIAL_ID }}",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract confidence score from OpenAI response and prepare data\nconst items = $input.all();\nconst outputItems = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Get the AI response message\n  const aiMessage = data.message || '';\n  \n  // Extract confidence score using regex\n  // Looking for pattern: \"Confidence: 0.85\" or \"Confidence:0.85\"\n  const confidenceMatch = aiMessage.match(/Confidence:\\s*([0-9]*\\.?[0-9]+)/);\n  let confidenceScore = 0.5; // Default to medium confidence\n  \n  if (confidenceMatch && confidenceMatch[1]) {\n    confidenceScore = parseFloat(confidenceMatch[1]);\n  }\n  \n  // Remove the confidence line from the message to get clean response\n  const cleanMessage = aiMessage.replace(/\\n*Confidence:\\s*[0-9]*\\.?[0-9]+\\s*$/, '').trim();\n  \n  // Determine automation decision\n  const shouldAutomate = confidenceScore >= 0.8;\n  const needsHumanReview = confidenceScore < 0.8;\n  \n  // Create structured output with all data\n  outputItems.push({\n    json: {\n      // Customer data (pass through from earlier nodes)\n      customerName: data.customerName || 'Customer',\n      customerEmail: data.customerEmail || '',\n      customerMessage: data.customerMessage || '',\n      orderNumber: data.orderNumber || null,\n      timestamp: data.timestamp || new Date().toISOString(),\n      \n      // AI response data\n      aiResponse: cleanMessage,\n      aiResponseRaw: aiMessage,\n      confidenceScore: confidenceScore,\n      \n      // Decision flags\n      shouldAutomate: shouldAutomate,\n      needsHumanReview: needsHumanReview,\n      \n      // Metadata\n      processedAt: new Date().toISOString(),\n      automationStatus: shouldAutomate ? 'AUTOMATED' : 'FLAGGED_FOR_REVIEW'\n    }\n  });\n}\n\nreturn outputItems;"
+      },
+      "id": "code-confidence-check-001",
+      "name": "Extract Confidence & Prepare Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "combineOperation": "any"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.confidenceScore }}",
+              "rightValue": 0.8,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-confidence-check-001",
+      "name": "Check Confidence",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "field1",
+              "name": "status",
+              "value": "success",
+              "type": "string"
+            },
+            {
+              "id": "field2",
+              "name": "automated",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "field3",
+              "name": "message",
+              "value": "={{ $json.aiResponse }}",
+              "type": "string"
+            },
+            {
+              "id": "field4",
+              "name": "customerName",
+              "value": "={{ $json.customerName }}",
+              "type": "string"
+            },
+            {
+              "id": "field5",
+              "name": "confidenceScore",
+              "value": "={{ $json.confidenceScore }}",
+              "type": "number"
+            },
+            {
+              "id": "field6",
+              "name": "timestamp",
+              "value": "={{ $json.timestamp }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-automated-response-001",
+      "name": "Prepare Automated Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1250,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "field1",
+              "name": "status",
+              "value": "pending_review",
+              "type": "string"
+            },
+            {
+              "id": "field2",
+              "name": "automated",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "field3",
+              "name": "message",
+              "value": "Thank you for contacting us! We've received your question and our team will review it shortly. You'll receive a response within 2-4 hours.",
+              "type": "string"
+            },
+            {
+              "id": "field4",
+              "name": "flaggedForReview",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "field5",
+              "name": "customerName",
+              "value": "={{ $json.customerName }}",
+              "type": "string"
+            },
+            {
+              "id": "field6",
+              "name": "customerEmail",
+              "value": "={{ $json.customerEmail }}",
+              "type": "string"
+            },
+            {
+              "id": "field7",
+              "name": "customerMessage",
+              "value": "={{ $json.customerMessage }}",
+              "type": "string"
+            },
+            {
+              "id": "field8",
+              "name": "aiSuggestion",
+              "value": "={{ $json.aiResponse }}",
+              "type": "string"
+            },
+            {
+              "id": "field9",
+              "name": "confidenceScore",
+              "value": "={{ $json.confidenceScore }}",
+              "type": "number"
+            },
+            {
+              "id": "field10",
+              "name": "timestamp",
+              "value": "={{ $json.timestamp }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-human-review-001",
+      "name": "Prepare Human Review Alert",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1250,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID/edit",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Customer Service Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.timestamp }}",
+            "Customer Name": "={{ $json.customerName }}",
+            "Customer Email": "={{ $json.customerEmail }}",
+            "Customer Message": "={{ $json.customerMessage }}",
+            "AI Response": "={{ $json.aiResponse }}",
+            "Confidence Score": "={{ $json.confidenceScore }}",
+            "Automation Status": "={{ $json.automationStatus }}",
+            "Order Number": "={{ $json.orderNumber || 'N/A' }}",
+            "Processed At": "={{ $json.processedAt }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Customer Name",
+              "displayName": "Customer Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Customer Email",
+              "displayName": "Customer Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Customer Message",
+              "displayName": "Customer Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "AI Response",
+              "displayName": "AI Response",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Confidence Score",
+              "displayName": "Confidence Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Automation Status",
+              "displayName": "Automation Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Order Number",
+              "displayName": "Order Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Processed At",
+              "displayName": "Processed At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "google-sheets-log-001",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1450,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "{{ GOOGLE_SHEETS_CREDENTIAL_ID }}",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Customer Service Webhook": {
+      "main": [
+        [
+          {
+            "node": "Process Customer Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Customer Data": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Customer Service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Customer Service": {
+      "main": [
+        [
+          {
+            "node": "Extract Confidence & Prepare Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Confidence & Prepare Data": {
+      "main": [
+        [
+          {
+            "node": "Check Confidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Confidence": {
+      "main": [
+        [
+          {
+            "node": "Prepare Automated Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Human Review Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Automated Response": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Human Review Alert": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-15T00:00:00.000Z",
+  "versionId": "1.0.0"
+}
